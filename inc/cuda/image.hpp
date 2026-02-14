@@ -16,15 +16,24 @@ namespace image {
     void rgb2rgba(const uchar3* d_in, uchar4* d_out, uint2 img_size, cudaStream_t stream = 0);
     void rgba2rgb(const uchar4* d_in, uchar3* d_out, uint2 img_size, cudaStream_t stream = 0);
 
-    void normalize(
-        const uchar3* d_in, float3* d_out, uint2 img_size, float3 mean = make_float3(0.0f, 0.0f, 0.0f),
-        float3 std = make_float3(1.0f, 1.0f, 1.0f), cudaStream_t stream = 0);
+    void float2uchar(const float3* d_in, uchar3* d_out, uint2 img_size, cudaStream_t stream = 0);
+    void uchar2float(const uchar3* d_in, float3* d_out, uint2 img_size, cudaStream_t stream = 0);
+    void uchar2float_nchw(const uchar3* d_in, float* d_out, uint2 img_size, cudaStream_t stream = 0);
 
+    void resize(const uchar3* d_in, uchar3* d_out, uint2 size_in, uint2 size_out, cudaStream_t stream = 0);
     void resize(const float3* d_in, float3* d_out, uint2 size_in, uint2 size_out, cudaStream_t stream = 0);
 
+    // d_out must be pre-allocated with enough space for the padded image (size_out.x * size_out.y).
+    // No reallocation or temporary buffer is performed inside this function.
     void padding(
-        const float3* d_in, float3* d_out, uint2 size_in, uint2 size_out,
+        const float3* d_in, float3* d_out, uint2 size_in, uint2 size_out, //
         float3 pad_value = make_float3(0.0f, 0.0f, 0.0f), cudaStream_t stream = 0);
+
+    // d_out must be pre-allocated with enough space for the padded image (size_out.x * size_out.y).
+    // No reallocation or temporary buffer is performed inside this function.
+    void padding(
+        const uchar3* d_in, uchar3* d_out, uint2 size_in, uint2 size_out, //
+        uchar3 pad_value = make_uchar3(114, 114, 114), cudaStream_t stream = 0);
 
 } // namespace image
 } // namespace cuda

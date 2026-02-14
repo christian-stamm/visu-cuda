@@ -1,5 +1,0 @@
-tqdm
-onnx 
-onnxslim 
-onnxruntime 
-ultralytics 

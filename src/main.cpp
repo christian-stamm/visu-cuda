@@ -1,17 +1,11 @@
-#include "corekit/core.hpp"
-#include "cuda/image.hpp"
+#include "corekit/utils/filemgr.hpp"
+#include "yolo/core.hpp"
 
 #include <csignal>
-#include <cstddef>
-#include <cstdint>
-#include <cuda_runtime.h>
-#include <cuda_runtime_api.h>
-#include <iostream>
+#include <cstdio>
 #include <opencv4/opencv2/core/mat.hpp>
 #include <opencv4/opencv2/highgui.hpp>
 #include <opencv4/opencv2/imgproc.hpp>
-#include <string>
-#include <vector_types.h>
 
 using namespace corekit::types;
 using namespace corekit::utils;
@@ -26,41 +20,67 @@ int main(int argc, char* argv[])
     std::string bytestream = File::loadTxt("/home/z0286456/Documents/cuda-visu/res/frame.yuv");
 
     uchar2* host_yuv_ptr = nullptr;
-    void*   host_rgb_ptr = nullptr;
-    void*   cuda_yuv_ptr = nullptr;
+    uchar3* host_rgb_ptr = nullptr;
+    uchar2* cuda_yuv_ptr = nullptr;
     uchar3* cuda_rgb_ptr = nullptr;
 
-    cudaHostAlloc(&host_yuv_ptr, 2 * numPixel, cudaHostAllocPortable);
-    cudaHostAlloc(&host_rgb_ptr, 3 * numPixel, cudaHostAllocPortable);
-    cudaMalloc(&cuda_yuv_ptr, 2 * numPixel);
-    cudaMalloc(&cuda_rgb_ptr, 3 * numPixel);
+    cudaHostAlloc(&host_yuv_ptr, numPixel * sizeof(uchar2), cudaHostAllocPortable);
+    cudaHostAlloc(&host_rgb_ptr, numPixel * sizeof(uchar3), cudaHostAllocPortable);
+    cudaMalloc(&cuda_yuv_ptr, numPixel * sizeof(uchar2));
+    cudaMalloc(&cuda_rgb_ptr, numPixel * sizeof(uchar3));
 
-    cudaStream_t stream;
-    cudaStreamCreate(&stream);
-    cudaMemcpyAsync(host_yuv_ptr, bytestream.data(), bytestream.size(), cudaMemcpyHostToHost, stream);
+    JsonMap config = File::loadJson("/home/z0286456/Documents/cuda-visu/res/yolo.json");
 
-    size_t sum = 0;
-    Watch  watch;
+    Path                     engine = "/home/z0286456/Documents/cuda-visu/res/models/tensorrt/desktop/yolo26n.engine";
+    std::vector<std::string> classes;
 
-    for (int i = 0; i < 1000; i++) {
-        cudaMemcpyAsync(cuda_yuv_ptr, host_yuv_ptr, bytestream.size(), cudaMemcpyHostToDevice, stream);
-
-        const uint8_t* d_yPlane  = reinterpret_cast<uint8_t*>(cuda_yuv_ptr);
-        const uint8_t* d_uvPlane = reinterpret_cast<uint8_t*>(cuda_yuv_ptr) + width * height;
-
-        cuda::image::yuv2rgb(d_yPlane, d_uvPlane, cuda_rgb_ptr, imgSize, false, stream);
-        cudaMemcpyAsync(host_rgb_ptr, cuda_rgb_ptr, 3 * numPixel, cudaMemcpyDeviceToHost, stream);
-
-        sum += reinterpret_cast<uchar3*>(host_rgb_ptr)[0].x; // Sum the blue channel of the first pixel
+    for (const auto& [key, name] : config["classes"].items()) {
+        classes.push_back(name.get<std::string>());
     }
 
-    std::cout << "Total time for 1000 iterations: " << watch.elapsed() << " seconds\n";
-    std::cout << "Sum of first pixel's blue channel over 1000 iterations: " << sum << "\n";
+    yolo::Core::Settings settings = {
+        .engine  = engine,
+        .classes = classes,
+    };
 
-    cv::Mat cvimg(height, width, CV_8UC3, host_rgb_ptr);
-    cv::cvtColor(cvimg, cvimg, cv::COLOR_RGB2BGR);
-    cv::imshow("Cuda Image", cvimg);
-    cv::waitKey(10000);
+    yolo::Core model(settings);
+
+    // cudaMemcpyAsync(host_yuv_ptr, bytestream.data(), bytestream.size(), cudaMemcpyHostToHost, model.stream);
+
+    // cudaMemcpyAsync(cuda_yuv_ptr, host_yuv_ptr, bytestream.size(), cudaMemcpyHostToDevice, model.stream);
+    // const uint8_t* d_yPlane  = reinterpret_cast<uint8_t*>(cuda_yuv_ptr);
+    // const uint8_t* d_uvPlane = reinterpret_cast<uint8_t*>(cuda_yuv_ptr) + width * height;
+    // cuda::image::yuv2rgb(d_yPlane, d_uvPlane, cuda_rgb_ptr, imgSize, false, model.stream);
+
+    cv::VideoCapture cap("/dev/video0");
+
+    if (!cap.isOpened()) {
+        std::cerr << "Error: Could not open camera" << std::endl;
+        return EXIT_FAILURE;
+    }
+
+    cv::Mat img;
+    model.load();
+
+    while (cap.isOpened() && cap.read(img)) {
+        cv::resize(img, img, cv::Size(width, height));
+        cv::cvtColor(img, img, cv::COLOR_BGR2RGB);
+
+        cudaMemcpyAsync(cuda_rgb_ptr, img.data, numPixel * sizeof(uchar3), cudaMemcpyHostToDevice, model.stream);
+        model.process(cuda_rgb_ptr, cuda_rgb_ptr, imgSize, 0.25);
+        cudaMemcpyAsync(host_rgb_ptr, cuda_rgb_ptr, numPixel * sizeof(uchar3), cudaMemcpyDeviceToHost, model.stream);
+        cudaStreamSynchronize(model.stream);
+
+        cv::Mat cvimg(height, width, CV_8UC3, host_rgb_ptr);
+        cv::resize(cvimg, cvimg, cv::Size(1280, 720));
+        cv::imshow("Cuda Image", cvimg);
+
+        if (cv::waitKey(1) == 27) { // Exit on 'ESC' key
+            break;
+        }
+    }
+
+    model.unload();
 
     return EXIT_SUCCESS;
 }

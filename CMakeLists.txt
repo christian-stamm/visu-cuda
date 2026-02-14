@@ -8,6 +8,18 @@ set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
 include(FindPkgConfig)
 find_package(OpenCV REQUIRED COMPONENTS core imgcodecs videoio highgui imgproc)
+find_package(Freetype REQUIRED)
+
+# TensorRT setup (installed at /usr/src/tensorrt or /usr)
+set(TENSORRT_ROOT "/usr" CACHE PATH "TensorRT root directory")
+find_library(NVINFER_LIBRARY NAMES nvinfer PATHS ${TENSORRT_ROOT}/lib)
+find_library(NVONNXPARSER_LIBRARY NAMES nvonnxparser PATHS ${TENSORRT_ROOT}/lib)
+find_library(NVINFER_PLUGIN_LIBRARY NAMES nvinfer_plugin PATHS ${TENSORRT_ROOT}/lib)
+find_path(TENSORRT_INCLUDE_DIR NvInfer.h PATHS ${TENSORRT_ROOT}/include)
+
+if(NOT NVINFER_LIBRARY OR NOT TENSORRT_INCLUDE_DIR)
+    message(FATAL_ERROR "TensorRT not found. Set TENSORRT_ROOT to the TensorRT installation directory.")
+endif()
 
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 
@@ -27,8 +39,10 @@ target_include_directories(trinity INTERFACE
 
 target_link_libraries(trinity INTERFACE
     corekit
-    trinity
     ${OpenCV_LIBS}
+    ${NVINFER_LIBRARY}
+    ${NVONNXPARSER_LIBRARY}
+    ${NVINFER_PLUGIN_LIBRARY}
 )
 
 ###################################################################
@@ -36,10 +50,16 @@ target_link_libraries(trinity INTERFACE
 add_library(cuda_ops STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src/cuda/core.cu   
     ${CMAKE_CURRENT_SOURCE_DIR}/src/cuda/image.cu
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/cuda/draw.cu
 )
 
 target_include_directories(cuda_ops PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    ${FREETYPE_INCLUDE_DIRS}
+)
+
+target_link_libraries(cuda_ops PUBLIC
+    ${FREETYPE_LIBRARIES}
 )
 
 add_executable(visu
