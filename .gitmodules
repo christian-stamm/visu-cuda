@@ -1,4 +1,0 @@
-
-[submodule "lib/corekit"]
-	path = lib/corekit
-	url = https://github.com/christian-stamm/corekit.git
