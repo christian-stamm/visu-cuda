@@ -149,6 +149,8 @@ uint BBox::buildBBox(
     cudaStream_t stream  // CUDA stream for asynchronous execution
 )
 {
+    check_cuda();
+
     if (!d_out) {
         throw std::invalid_argument("Null pointer passed to buildBBox");
     }
@@ -165,17 +167,14 @@ uint BBox::buildBBox(
     int gridSize  = (letbox.dets + blockSize - 1) / blockSize;
 
     buildBBoxKernel<<<gridSize, blockSize, 0, stream>>>(d_out, d_count, d_letbox, mem);
-    check_cuda("buildBBox A");
 
     uint h_dets = 0;
     cudaMemcpyAsync(&h_dets, d_count, sizeof(uint), cudaMemcpyDeviceToHost, stream);
     cudaStreamSynchronize(stream); // Wait for async copy to complete before reading h_dets
-    check_cuda("buildBBox A1");
 
     cudaFreeAsync(d_count, stream);
     cudaFreeAsync(d_letbox, stream);
-
-    check_cuda("buildBBox B");
+    check_cuda();
     return h_dets;
 }
 
@@ -189,6 +188,8 @@ void BBox::drawBBox(
     cudaStream_t stream // CUDA stream for asynchronous execution
 )
 {
+    check_cuda();
+
     if (count == 0) {
         return; // Nothing to draw
     }
@@ -202,7 +203,7 @@ void BBox::drawBBox(
     drawRect(d_img, mem.d_rects, 2 * count, stream);
     drawText(d_img, mem.d_texts, 1 * count, mem.d_txtfont, stream);
 
-    check_cuda("drawBBox");
+    check_cuda();
 }
 
 } // namespace yolo

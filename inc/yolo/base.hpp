@@ -46,6 +46,7 @@ class Base : public Model {
         cudaMemcpyAsync(out.data, in.data, in.getPixels() * sizeof(uchar3), cudaMemcpyDeviceToDevice, stream);
 
         this->preprocess(letter);
+        cudaStreamSynchronize(stream);
         this->exec();
         cudaStreamSynchronize(stream);
         this->postprocess(letter);
@@ -54,6 +55,7 @@ class Base : public Model {
         cudaMemcpyAsync(
             result.data(), storage.d_boxes, letter.dets * sizeof(BoundingBox), cudaMemcpyDeviceToHost, stream);
         cudaStreamSynchronize(stream);
+
         return result;
     }
 
@@ -89,8 +91,11 @@ class Base : public Model {
         tf.padding = padding;
 
         in.resize_into(resized, scaled);
+        cudaStreamSynchronize(stream);
         resized.pad_into(padded, netsize);
+        cudaStreamSynchronize(stream);
         padded.chnflip_into(tensor);
+        cudaStreamSynchronize(stream);
     }
 
     virtual void postprocess(Letterbox& letter) = 0;

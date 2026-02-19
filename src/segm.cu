@@ -140,10 +140,16 @@ __global__ void overlayMaskKernel(
     const BoundingBox& bbox = mem.d_boxes[det_idx];
 
     // bbox is already in original image space
-    const int x0 = bbox.pos.x - bbox.dim.x / 2;
-    const int y0 = bbox.pos.y - bbox.dim.y / 2;
-    const int x1 = bbox.pos.x + bbox.dim.x / 2;
-    const int y1 = bbox.pos.y + bbox.dim.y / 2;
+    // Use floating point for proper centroid-to-corner conversion (avoids integer truncation)
+    const float x0_f = bbox.pos.x - bbox.dim.x * 0.5f;
+    const float y0_f = bbox.pos.y - bbox.dim.y * 0.5f;
+    const float x1_f = bbox.pos.x + bbox.dim.x * 0.5f;
+    const float y1_f = bbox.pos.y + bbox.dim.y * 0.5f;
+
+    const int x0 = (int)x0_f;
+    const int y0 = (int)y0_f;
+    const int x1 = (int)x1_f;
+    const int y1 = (int)y1_f;
 
     const int bbox_width   = x1 - x0;
     const int bbox_height  = y1 - y0;
@@ -188,15 +194,20 @@ __global__ void overlayMaskKernel(
     const int mx1 = min(mx0 + 1, MASK_WIDTH - 1);
     const int my1 = min(my0 + 1, MASK_HEIGHT - 1);
 
+    // Clamp mx0/my0 to valid range
+    const int mx0_clamped = max(0, mx0);
+    const int my0_clamped = max(0, my0);
+
     const float fx = mask_x - mx0;
     const float fy = mask_y - my0;
 
-    // Sample mask prototype at 4 corners
+    // Sample mask prototype at 4 corners with proper bounds checking
     const float* proto = mem.d_proto[det_idx];
-    const float  v00   = proto[my0 * MASK_WIDTH + mx0];
-    const float  v10   = proto[my0 * MASK_WIDTH + mx1];
-    const float  v01   = proto[my1 * MASK_WIDTH + mx0];
-    const float  v11   = proto[my1 * MASK_WIDTH + mx1];
+
+    float v00 = (mx0 >= 0 && my0 >= 0) ? proto[my0_clamped * MASK_WIDTH + mx0_clamped] : 0.0f;
+    float v10 = (mx1 < MASK_WIDTH && my0 >= 0) ? proto[my0_clamped * MASK_WIDTH + mx1] : 0.0f;
+    float v01 = (mx0 >= 0 && my1 < MASK_HEIGHT) ? proto[my1 * MASK_WIDTH + mx0_clamped] : 0.0f;
+    float v11 = (mx1 < MASK_WIDTH && my1 < MASK_HEIGHT) ? proto[my1 * MASK_WIDTH + mx1] : 0.0f;
 
     // Bilinear interpolation
     const float v0       = v00 * (1.0f - fx) + v10 * fx;
@@ -266,6 +277,8 @@ void Segm::drawSegm(
     cudaStream_t stream  // CUDA stream for asynchronous execution
 )
 {
+    check_cuda();
+
     if (count == 0) {
         return;
     }
@@ -286,14 +299,17 @@ void Segm::drawSegm(
     cudaMallocAsync(&d_letbox, sizeof(Letterbox), stream);
     cudaMemcpyAsync(d_letbox, &letbox, sizeof(Letterbox), cudaMemcpyHostToDevice, stream);
 
-    // Step 2: Overlay masks on image - 2D grid: x-dimension for detections, y-dimension for bbox pixels
-    // Assume max bbox size is reasonable (e.g., 512x512 = 262k pixels per detection)
-    // This avoids launching excessive threads while covering most real-world cases
-    const uint max_bbox_pixels = 512 * 512;
-    dim3       overlayGridSize(count, (max_bbox_pixels + blockSize - 1) / blockSize);
-    overlayMaskKernel<<<overlayGridSize, blockSize, 0, stream>>>(d_img, d_img.getSize(), d_letbox, count, mem);
+    // Step 2: Overlay masks on image - 2D grid: x-dimension for detections, y-dimension for pixels
+    // Launch enough threads to cover the full image dimensions, not just a max bbox size
+    // Each thread processes one potential pixel in the bbox
+    const uint2 img_size         = d_img.getSize();
+    const uint  max_image_pixels = img_size.x * img_size.y;
+    dim3        overlayGridSize(count, (max_image_pixels + blockSize - 1) / blockSize);
+    overlayMaskKernel<<<overlayGridSize, blockSize, 0, stream>>>(d_img, img_size, d_letbox, count, mem);
 
     cudaFreeAsync(d_letbox, stream);
+
+    check_cuda();
 }
 
 } // namespace yolo

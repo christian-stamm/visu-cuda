@@ -190,7 +190,6 @@ uint Pose::buildPose(
     cudaFreeAsync(d_letbox, stream);
     cudaFreeAsync(d_det_count, stream);
 
-    check_cuda("buildPose");
     return h_dets;
 }
 
@@ -201,6 +200,8 @@ void Pose::drawPose(
     cudaStream_t stream // CUDA stream for asynchronous execution
 )
 {
+    check_cuda();
+
     if (count == 0) {
         return; // Nothing to draw
     }
@@ -231,7 +232,7 @@ void Pose::drawPose(
     cudaFreeAsync(d_bone_count, stream);
     cudaFreeAsync(d_joint_count, stream);
 
-    check_cuda("drawPose");
+    check_cuda();
 }
 
 } // namespace yolo
