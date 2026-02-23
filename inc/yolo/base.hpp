@@ -26,6 +26,9 @@ class Base : public Model {
         , config(settings.config)
         , netsize(make_uint2(NET_WIDTH, NET_HEIGHT))
     {
+        resized_cache = Image3U(netsize);
+        padded_cache  = Image3U(netsize);
+        tensor_cache  = Image3F(netsize);
     }
 
     yolo::Result process(const Image3U& in, Image3U& out, float conf = 0.25f)
@@ -43,18 +46,21 @@ class Base : public Model {
             .dets = MAX_DETS,
         };
 
-        cudaMemcpyAsync(out.data, in.data, in.getPixels() * sizeof(uchar3), cudaMemcpyDeviceToDevice, stream);
+        check_cuda();
+        if (out.ptr() != in.ptr()) {
+            cudaMemcpyAsync(out.ptr(), in.ptr(), in.get_bytes(), cudaMemcpyDeviceToDevice, stream);
+        }
 
         this->preprocess(letter);
-        cudaStreamSynchronize(stream);
         this->exec();
-        cudaStreamSynchronize(stream);
         this->postprocess(letter);
 
         yolo::Result result(letter.dets);
         cudaMemcpyAsync(
             result.data(), storage.d_boxes, letter.dets * sizeof(BoundingBox), cudaMemcpyDeviceToHost, stream);
+
         cudaStreamSynchronize(stream);
+        check_cuda();
 
         return result;
     }
@@ -62,40 +68,28 @@ class Base : public Model {
   protected:
     void preprocess(Letterbox& letter)
     {
-        const IOBinding& b_in = inputs.front();
-
-        preprocess_into(letter.in, letter.tf, resized_cache, padded_cache, tensor_cache);
-
-        cudaMemcpyAsync(
-            b_in.ptr, tensor_cache.data, tensor_cache.getPixels() * sizeof(float), cudaMemcpyDeviceToDevice, stream);
-    }
-
-    void preprocess_into(const Image3U& in, Transform& tf, Image3U& resized, Image3U& padded, Image1F& tensor)
-    {
-        const uint2 imgsize = in.getSize();
+        const IOBinding& b_in    = inputs.front();
+        const uint2      imgsize = letter.in.getSize();
 
         const float scaledX = 1.0f * netsize.x / imgsize.x;
         const float scaledY = 1.0f * netsize.y / imgsize.y;
-        const float scaling = std::min<float>(scaledX, scaledY);
-        const uint  scaledW = (imgsize.x * scaling + 0.5f);
-        const uint  scaledH = (imgsize.y * scaling + 0.5f);
-        const uint  paddedW = (netsize.x - scaledW) / 2;
-        const uint  paddedH = (netsize.y - scaledH) / 2;
+        letter.tf.scaling   = std::min<float>(scaledX, scaledY);
+        const uint scaledW  = (imgsize.x * letter.tf.scaling + 0.5f);
+        const uint scaledH  = (imgsize.y * letter.tf.scaling + 0.5f);
+        const uint paddedW  = (netsize.x - scaledW) / 2;
+        const uint paddedH  = (netsize.y - scaledH) / 2;
 
-        const uint2 scaled  = make_uint2(scaledW, scaledH);
-        const uint2 padding = make_uint2(paddedW, paddedH);
+        const uint2 scaled = make_uint2(scaledW, scaledH);
+        letter.tf.padding  = make_uint2(paddedW, paddedH);
 
-        tf.imgsize = imgsize;
-        tf.netsize = netsize;
-        tf.scaling = scaling;
-        tf.padding = padding;
+        letter.tf.imgsize = imgsize;
+        letter.tf.netsize = netsize;
 
-        in.resize_into(resized, scaled);
-        cudaStreamSynchronize(stream);
-        resized.pad_into(padded, netsize);
-        cudaStreamSynchronize(stream);
-        padded.chnflip_into(tensor);
-        cudaStreamSynchronize(stream);
+        letter.in.resize_into(resized_cache, scaled);
+        resized_cache.pad_into(padded_cache, make_uchar3(114, 114, 114));
+        padded_cache.chnflip_into(tensor_cache);
+
+        cudaMemcpyAsync(b_in.ptr, tensor_cache.ptr(), tensor_cache.get_bytes(), cudaMemcpyDeviceToDevice, stream);
     }
 
     virtual void postprocess(Letterbox& letter) = 0;
@@ -122,7 +116,7 @@ class Base : public Model {
     uint2   netsize;
     Image3U resized_cache;
     Image3U padded_cache;
-    Image1F tensor_cache;
+    Image3F tensor_cache;
 
 }; // namespace yolo
 

@@ -122,7 +122,7 @@ __global__ void buildMaskKernel(
 }
 
 __global__ void overlayMaskKernel(
-    Image3U    d_img,    // Image data on device
+    uchar*     d_img,    // Image data on device
     uint2      img_size, // Image dimensions
     Letterbox* d_letbox, // Letterbox info for coordinate transformation
     uint       count,    // Number of valid detections
@@ -230,11 +230,11 @@ __global__ void overlayMaskKernel(
         make_uchar3((uchar)(color.r * 255.0f), (uchar)(color.g * 255.0f), (uchar)(color.b * 255.0f));
 
     // Blend with image using alpha
-    uchar3* pixel = &d_img.data[img_y * img_size.x + img_x];
-
-    pixel->x = (uchar)(pixel->x * (1.0f - alpha * 0.5f) + color_u8.x * alpha * 0.5f);
-    pixel->y = (uchar)(pixel->y * (1.0f - alpha * 0.5f) + color_u8.y * alpha * 0.5f);
-    pixel->z = (uchar)(pixel->z * (1.0f - alpha * 0.5f) + color_u8.z * alpha * 0.5f);
+    const int pixel_idx = (img_y * img_size.x + img_x) * 3;
+    
+    d_img[pixel_idx + 0] = (uchar)(d_img[pixel_idx + 0] * (1.0f - alpha * 0.5f) + color_u8.x * alpha * 0.5f);
+    d_img[pixel_idx + 1] = (uchar)(d_img[pixel_idx + 1] * (1.0f - alpha * 0.5f) + color_u8.y * alpha * 0.5f);
+    d_img[pixel_idx + 2] = (uchar)(d_img[pixel_idx + 2] * (1.0f - alpha * 0.5f) + color_u8.z * alpha * 0.5f);
 }
 
 uint Segm::buildSegm(
@@ -245,27 +245,24 @@ uint Segm::buildSegm(
 )
 {
 
-    uint* d_count;
-    cudaMallocAsync(&d_count, sizeof(uint), stream);
-    cudaMemsetAsync(d_count, 0, sizeof(uint), stream);
+    NvMem<uint> d_count(1); // Device memory for counting valid detections
+    check_cuda(cudaMemsetAsync(d_count.ptr(), 0, sizeof(uint), stream));
 
-    Letterbox* d_letbox = nullptr;
-    cudaMallocAsync(&d_letbox, sizeof(Letterbox), stream);
-    cudaMemcpyAsync(d_letbox, &letbox, sizeof(Letterbox), cudaMemcpyHostToDevice, stream);
+    NvMem<Letterbox> d_letbox;
+    check_cuda(cudaMemcpyAsync(d_letbox.ptr(), &letbox, sizeof(Letterbox), cudaMemcpyHostToDevice, stream));
 
     int blockSize = 256;
     int gridSize  = (letbox.dets + blockSize - 1) / blockSize;
 
-    buildSegmKernel<<<gridSize, blockSize, 0, stream>>>(d_out, d_count, d_letbox, mem);
+    buildSegmKernel<<<gridSize, blockSize, 0, stream>>>(d_out, d_count.ptr(), d_letbox.ptr(), mem);
+    check_cuda();
 
     // Copy back the count of valid detections
-    uint h_count;
-    cudaMemcpyAsync(&h_count, d_count, sizeof(uint), cudaMemcpyDeviceToHost, stream);
-    cudaStreamSynchronize(stream); // Ensure the count is updated before returning
+    letbox.dets = 0; // Reset count on host before copying back
+    check_cuda(cudaMemcpyAsync(&letbox.dets, d_count.ptr(), sizeof(uint), cudaMemcpyDeviceToHost, stream));
+    check_cuda();
 
-    cudaFreeAsync(d_count, stream);
-
-    return h_count;
+    return letbox.dets;
 }
 
 void Segm::drawSegm(
@@ -294,10 +291,8 @@ void Segm::drawSegm(
     dim3 maskGridSize(count, (total_pixels + blockSize - 1) / blockSize);
     buildMaskKernel<<<maskGridSize, blockSize, 0, stream>>>(d_mout, count, mem);
 
-    // Copy letterbox to device
-    Letterbox* d_letbox = nullptr;
-    cudaMallocAsync(&d_letbox, sizeof(Letterbox), stream);
-    cudaMemcpyAsync(d_letbox, &letbox, sizeof(Letterbox), cudaMemcpyHostToDevice, stream);
+    NvMem<Letterbox> d_letbox;
+    check_cuda(cudaMemcpyAsync(d_letbox.ptr(), &letbox, sizeof(Letterbox), cudaMemcpyHostToDevice, stream));
 
     // Step 2: Overlay masks on image - 2D grid: x-dimension for detections, y-dimension for pixels
     // Launch enough threads to cover the full image dimensions, not just a max bbox size
@@ -305,9 +300,7 @@ void Segm::drawSegm(
     const uint2 img_size         = d_img.getSize();
     const uint  max_image_pixels = img_size.x * img_size.y;
     dim3        overlayGridSize(count, (max_image_pixels + blockSize - 1) / blockSize);
-    overlayMaskKernel<<<overlayGridSize, blockSize, 0, stream>>>(d_img, img_size, d_letbox, count, mem);
-
-    cudaFreeAsync(d_letbox, stream);
+    overlayMaskKernel<<<overlayGridSize, blockSize, 0, stream>>>(d_img.ptr(), img_size, d_letbox.ptr(), count, mem);
 
     check_cuda();
 }

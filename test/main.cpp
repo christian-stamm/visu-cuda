@@ -22,7 +22,7 @@ int main(int argc, char* argv[])
     const size_t numPixel = width * height;
     const uint2  imgSize  = make_uint2(width, height);
 
-    cv::VideoCapture cap("/dev/video0");
+    cv::VideoCapture cap("/home/orinagx/Documents/trinity-visu/res/media/current_ISP.mp4");
 
     if (!cap.isOpened()) {
         std::cerr << "Error: Could not open camera" << std::endl;
@@ -45,6 +45,8 @@ int main(int argc, char* argv[])
     pose.load();
     segm.load();
 
+    Image3U d_in, d_net, d_out;
+
     while (cap.isOpened()) {
         cv::Mat in_img;
 
@@ -53,15 +55,15 @@ int main(int argc, char* argv[])
             break;
         }
 
-        Image3U d_img = Image3U::fromCvMat(in_img);
+        Image3U::fromCvMat(d_in, in_img);
 
-        d_img = d_img.resize(make_uint2(width, height));
-        bbox.process(d_img, d_img, 0.5);
-        // pose.process(d_img, d_img, 0.5);
-        // segm.process(d_img, d_img, 0.5);
-        d_img = d_img.resize(make_uint2(1280, 720));
+        d_in.clone_into(d_net);
 
-        cv::Mat out_img = d_img.toCvMat();
+        bbox.process(d_in, d_net, 0.5);
+
+        d_net.resize_into(d_out, make_uint2(1280, 720));
+
+        cv::Mat out_img = d_out.toCvMat();
 
         cv::imshow("Cuda Image", out_img);
         if (cv::waitKey(1) == 27) {

@@ -155,27 +155,23 @@ uint BBox::buildBBox(
         throw std::invalid_argument("Null pointer passed to buildBBox");
     }
 
-    uint* d_count = nullptr;
-    cudaMallocAsync(&d_count, sizeof(uint), stream);
-    cudaMemsetAsync(d_count, 0, sizeof(uint), stream);
+    NvMem<uint> d_count(1); // Device memory for counting valid detections
+    check_cuda(cudaMemsetAsync(d_count.ptr(), 0, sizeof(uint), stream));
 
-    Letterbox* d_letbox = nullptr;
-    cudaMallocAsync(&d_letbox, sizeof(Letterbox), stream);
-    cudaMemcpyAsync(d_letbox, &letbox, sizeof(Letterbox), cudaMemcpyHostToDevice, stream);
+    NvMem<Letterbox> d_letbox(1); // Device memory for letterbox transformation info
+    check_cuda(cudaMemcpyAsync(d_letbox.ptr(), &letbox, sizeof(Letterbox), cudaMemcpyHostToDevice, stream));
 
     int blockSize = 256;
     int gridSize  = (letbox.dets + blockSize - 1) / blockSize;
 
-    buildBBoxKernel<<<gridSize, blockSize, 0, stream>>>(d_out, d_count, d_letbox, mem);
-
-    uint h_dets = 0;
-    cudaMemcpyAsync(&h_dets, d_count, sizeof(uint), cudaMemcpyDeviceToHost, stream);
-    cudaStreamSynchronize(stream); // Wait for async copy to complete before reading h_dets
-
-    cudaFreeAsync(d_count, stream);
-    cudaFreeAsync(d_letbox, stream);
+    buildBBoxKernel<<<gridSize, blockSize, 0, stream>>>(d_out, d_count.ptr(), d_letbox.ptr(), mem);
     check_cuda();
-    return h_dets;
+
+    letbox.dets = 0; // Reset count on host before copying back
+    check_cuda(cudaMemcpyAsync(&letbox.dets, d_count.ptr(), sizeof(uint), cudaMemcpyDeviceToHost, stream));
+    check_cuda();
+
+    return letbox.dets;
 }
 
 /**
@@ -198,6 +194,7 @@ void BBox::drawBBox(
     int gridSize  = (count + blockSize - 1) / blockSize;
 
     extractBBoxPartsKernel<<<gridSize, blockSize, 0, stream>>>(mem, count);
+    check_cuda();
 
     // Draw rectangles directly from device memory
     drawRect(d_img, mem.d_rects, 2 * count, stream);
