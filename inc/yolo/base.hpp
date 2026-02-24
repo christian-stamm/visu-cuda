@@ -57,11 +57,10 @@ class Base : public Model {
 
         yolo::Result result(letter.dets);
         cudaMemcpyAsync(
-            result.data(), storage.d_boxes, letter.dets * sizeof(BoundingBox), cudaMemcpyDeviceToHost, stream);
+            result.data(), storage.d_boxes.ptr(), letter.dets * sizeof(BoundingBox), cudaMemcpyDeviceToHost, stream);
 
-        cudaStreamSynchronize(stream);
+
         check_cuda();
-
         return result;
     }
 

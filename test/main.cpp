@@ -45,7 +45,7 @@ int main(int argc, char* argv[])
     pose.load();
     segm.load();
 
-    Image3U d_in, d_net, d_out;
+    Image3U d_in, d_out;
 
     while (cap.isOpened()) {
         cv::Mat in_img;
@@ -57,12 +57,11 @@ int main(int argc, char* argv[])
 
         Image3U::fromCvMat(d_in, in_img);
 
-        d_in.clone_into(d_net);
+        bbox.process(d_in, d_in, 0.5);
+        pose.process(d_in, d_in, 0.5);
+        segm.process(d_in, d_in, 0.5);
 
-        bbox.process(d_in, d_net, 0.5);
-
-        d_net.resize_into(d_out, make_uint2(1280, 720));
-
+        d_in.resize_into(d_out, make_uint2(1280, 720));
         cv::Mat out_img = d_out.toCvMat();
 
         cv::imshow("Cuda Image", out_img);

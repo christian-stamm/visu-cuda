@@ -61,10 +61,10 @@ __device__ __forceinline__ uchar4 rgb2col(Color rgb)
 }
 
 __global__ void buildPoseKernel(
-    const float* d_mout,   // Raw detection data (x0, y0, x1, y1, conf, class_id)
-    uint*        d_count,  // Atomic counter for valid detections
-    Letterbox*   d_letbox, // Letterbox info for coordinate transformation
-    Storage      mem       // Memory manager for intermediate buffers
+    const float*   d_mout,   // Raw detection data (x0, y0, x1, y1, conf, class_id)
+    uint*          d_count,  // Atomic counter for valid detections
+    Letterbox*     d_letbox, // Letterbox info for coordinate transformation
+    DeviceStorage  mem       // Memory manager for intermediate buffers
 )
 {
     uint idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -101,10 +101,10 @@ __global__ void buildPoseKernel(
 }
 
 __global__ void extractPosePartsKernel(
-    uint    count,         // Number of valid boxes
-    uint*   d_bone_count,  // Atomic counter for bones
-    uint*   d_joint_count, // Atomic counter for joints
-    Storage mem            // Memory manager for intermediate buffers
+    uint           count,         // Number of valid boxes
+    uint*          d_bone_count,  // Atomic counter for bones
+    uint*          d_joint_count, // Atomic counter for joints
+    DeviceStorage  mem            // Memory manager for intermediate buffers
 )
 {
     uint idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -172,19 +172,16 @@ uint Pose::buildPose(
         throw std::invalid_argument("Null pointer passed to buildPose");
     }
 
-    NvMem<uint> d_count(1); // Device memory for counting valid detections
-    check_cuda(cudaMemsetAsync(d_count.ptr(), 0, sizeof(uint), stream));
-
-    NvMem<Letterbox> d_letbox;
-    check_cuda(cudaMemcpyAsync(d_letbox.ptr(), &letbox, sizeof(Letterbox), cudaMemcpyHostToDevice, stream));
+    check_cuda(cudaMemsetAsync(mem.d_count.ptr(), 0, sizeof(uint), stream));
+    check_cuda(cudaMemcpyAsync(mem.d_letbox.ptr(), &letbox, sizeof(Letterbox), cudaMemcpyHostToDevice, stream));
 
     int blockSize = 256;
     int gridSize  = (letbox.dets + blockSize - 1) / blockSize;
 
-    buildPoseKernel<<<gridSize, blockSize, 0, stream>>>(d_out, d_count.ptr(), d_letbox.ptr(), mem);
+    buildPoseKernel<<<gridSize, blockSize, 0, stream>>>(d_out, mem.d_count.ptr(), mem.d_letbox.ptr(), mem.device());
 
     letbox.dets = 0; // Reset count on host before copying back
-    check_cuda(cudaMemcpyAsync(&letbox.dets, d_count.ptr(), sizeof(uint), cudaMemcpyDeviceToHost, stream));
+    check_cuda(cudaMemcpyAsync(&letbox.dets, mem.d_count.ptr(), sizeof(uint), cudaMemcpyDeviceToHost, stream));
     check_cuda();
 
     return letbox.dets;
@@ -203,29 +200,22 @@ void Pose::drawPose(
         return; // Nothing to draw
     }
 
-    NvMem<uint> d_bone_count(1); // Device memory for counting valid detections
-    check_cuda(cudaMemsetAsync(d_bone_count.ptr(), 0, sizeof(uint), stream));
-
-    NvMem<uint> d_joint_count(1); // Device memory for counting valid detections
-    check_cuda(cudaMemsetAsync(d_joint_count.ptr(), 0, sizeof(uint), stream));
-
-    cudaMemsetAsync(d_bone_count.ptr(), 0, sizeof(uint), stream);
-    cudaMemsetAsync(d_joint_count.ptr(), 0, sizeof(uint), stream);
+    check_cuda(cudaMemsetAsync(mem.d_bone_count.ptr(), 0, sizeof(uint), stream));
+    check_cuda(cudaMemsetAsync(mem.d_joint_count.ptr(), 0, sizeof(uint), stream));
 
     int blockSize = 256;
     int gridSize  = (count + blockSize - 1) / blockSize;
 
-    extractPosePartsKernel<<<gridSize, blockSize, 0, stream>>>(count, d_bone_count.ptr(), d_joint_count.ptr(), mem);
+    extractPosePartsKernel<<<gridSize, blockSize, 0, stream>>>(count, mem.d_bone_count.ptr(), mem.d_joint_count.ptr(), mem.device());
 
     uint h_bone_count  = 0;
     uint h_joint_count = 0;
-    cudaMemcpyAsync(&h_bone_count, d_bone_count.ptr(), sizeof(uint), cudaMemcpyDeviceToHost, stream);
-    cudaMemcpyAsync(&h_joint_count, d_joint_count.ptr(), sizeof(uint), cudaMemcpyDeviceToHost, stream);
-    cudaStreamSynchronize(stream);
+    cudaMemcpyAsync(&h_bone_count, mem.d_bone_count.ptr(), sizeof(uint), cudaMemcpyDeviceToHost, stream);
+    cudaMemcpyAsync(&h_joint_count, mem.d_joint_count.ptr(), sizeof(uint), cudaMemcpyDeviceToHost, stream);
 
     yolo::BBox::drawBBox(d_img, count, mem, stream);
-    drawLine(d_img, mem.d_lines, h_bone_count, stream);
-    drawCircle(d_img, mem.d_circles, h_joint_count, stream);
+    drawLine(d_img, mem.d_lines.ptr(), h_bone_count, stream);
+    drawCircle(d_img, mem.d_circles.ptr(), h_joint_count, stream);
 
     check_cuda();
 }

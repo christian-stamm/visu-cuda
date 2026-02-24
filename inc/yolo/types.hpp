@@ -69,6 +69,26 @@ using Coeff = float[MASK_COEFFS];
 using Skeleton = Keypoint[NUM_KPS];
 using Result   = std::vector<BoundingBox>;
 
+// Device-friendly view with raw pointers (for kernel usage)
+struct DeviceStorage {
+    Letterbox*   d_letbox;
+    BoundingBox* d_boxes;
+    Skeleton*    d_skelets;
+    Bone*        d_bones;
+    Proto*       d_proto;
+    Coeff*       d_coeffs;
+    Color*       d_palette;
+    char*        d_classes;
+    Font*        d_txtfont;
+    Line*        d_lines;
+    Rect*        d_rects;
+    Text*        d_texts;
+    Circle*      d_circles;
+    uint*        d_count;
+    uint*        d_bone_count;
+    uint*        d_joint_count;
+};
+
 struct Storage {
 
     static Storage load(const Path& cfgFile, cudaStream_t stream)
@@ -103,111 +123,88 @@ struct Storage {
 
         palette = Color::sample(classes.size());
 
-        cudaMallocAsync(&mem.d_boxes, MAX_DETS * sizeof(BoundingBox), stream);
-        cudaMallocAsync(&mem.d_skelets, MAX_DETS * sizeof(Skeleton), stream);
-        cudaMallocAsync(&mem.d_proto, MAX_DETS * sizeof(Proto), stream);
-        cudaMallocAsync(&mem.d_coeffs, MAX_DETS * sizeof(Coeff), stream);
-        cudaMallocAsync(&mem.d_bones, bones.size() * sizeof(Bone), stream);
-        cudaMallocAsync(&mem.d_palette, classes.size() * sizeof(Color), stream);
-        cudaMallocAsync(&mem.d_classes, classes.size() * MAX_TEXT_LEN, stream);
-
-        cudaMallocAsync(&mem.d_rects, MAX_PRIMITVES * sizeof(Rect), stream);
-        cudaMallocAsync(&mem.d_texts, MAX_PRIMITVES * sizeof(Text), stream);
-        cudaMallocAsync(&mem.d_lines, MAX_PRIMITVES * sizeof(Line), stream);
-        cudaMallocAsync(&mem.d_circles, MAX_PRIMITVES * sizeof(Circle), stream);
+        mem.d_boxes = NvMem<BoundingBox>(MAX_DETS);
+        mem.d_letbox = NvMem<Letterbox>(1);
+        mem.d_skelets = NvMem<Keypoint>(MAX_DETS * NUM_KPS); // Flatten array
+        mem.d_proto = NvMem<float>(MAX_DETS * MASK_WIDTH * MASK_HEIGHT); // Flatten array
+        mem.d_coeffs = NvMem<float>(MAX_DETS * MASK_COEFFS); // Flatten array
+        mem.d_bones = NvMem<Bone>(bones.size());
+        mem.d_palette = NvMem<Color>(palette.size());
+        mem.d_classes = NvMem<char>(classes.size() * MAX_TEXT_LEN);
+        mem.d_lines = NvMem<Line>(MAX_PRIMITVES);
+        mem.d_rects = NvMem<Rect>(MAX_PRIMITVES);
+        mem.d_texts = NvMem<Text>(MAX_PRIMITVES);
+        mem.d_circles = NvMem<Circle>(MAX_PRIMITVES);
+        
+        // Counters for atomic operations
+        mem.d_count = NvMem<uint>(1);
+        mem.d_bone_count = NvMem<uint>(1);
+        mem.d_joint_count = NvMem<uint>(1);
 
         mem.d_txtfont = Font::loadFont("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", DEF_TEXT_SIZE);
 
-        cudaMemcpyAsync(mem.d_bones, bones.data(), bones.size() * sizeof(Bone), cudaMemcpyHostToDevice, stream);
-        cudaMemcpyAsync(mem.d_palette, palette.data(), palette.size() * sizeof(Color), cudaMemcpyHostToDevice, stream);
+        cudaMemcpyAsync(mem.d_bones.ptr(), bones.data(), bones.size() * sizeof(Bone), cudaMemcpyHostToDevice, stream);
+        cudaMemcpyAsync(mem.d_palette.ptr(), palette.data(), palette.size() * sizeof(Color), cudaMemcpyHostToDevice, stream);
 
         for (uint cls = 0; cls < classes.size(); cls++) {
             const Name&  name = classes.at(cls);
-            char*        base = mem.d_classes + cls * MAX_TEXT_LEN;
+            char*        base = mem.d_classes.ptr() + cls * MAX_TEXT_LEN;
             const size_t size = std::min<size_t>(name.size(), MAX_TEXT_LEN);
             cudaMemcpyAsync(base, name.c_str(), size * sizeof(char), cudaMemcpyHostToDevice, stream);
         }
 
         for (uint det = 0; det < MAX_DETS; det++) {
-            cudaMemcpyAsync(&mem.d_skelets[det], keypts.data(), sizeof(Skeleton), cudaMemcpyHostToDevice, stream);
+            cudaMemcpyAsync(&mem.d_skelets.ptr()[det * NUM_KPS], keypts.data(), sizeof(Skeleton), cudaMemcpyHostToDevice, stream);
         }
 
-        cudaStreamSynchronize(stream);
         return mem;
     };
 
     static void free(Storage& mem, cudaStream_t stream)
     {
-        if (mem.d_boxes) {
-            cudaFreeAsync(mem.d_boxes, stream);
-            mem.d_boxes = nullptr;
-        }
-
-        if (mem.d_skelets) {
-            cudaFreeAsync(mem.d_skelets, stream);
-            mem.d_skelets = nullptr;
-        }
-
-        if (mem.d_proto) {
-            cudaFreeAsync(mem.d_proto, stream);
-            mem.d_proto = nullptr;
-        }
-
-        if (mem.d_coeffs) {
-            cudaFreeAsync(mem.d_coeffs, stream);
-            mem.d_coeffs = nullptr;
-        }
-
-        if (mem.d_bones) {
-            cudaFreeAsync(mem.d_bones, stream);
-            mem.d_bones = nullptr;
-        }
-
-        if (mem.d_palette) {
-            cudaFreeAsync(mem.d_palette, stream);
-            mem.d_palette = nullptr;
-        }
-
-        if (mem.d_classes) {
-            cudaFreeAsync(mem.d_classes, stream);
-            mem.d_classes = nullptr;
-        }
-
-        if (mem.d_rects) {
-            cudaFreeAsync(mem.d_rects, stream);
-            mem.d_rects = nullptr;
-        }
-
-        if (mem.d_texts) {
-            cudaFreeAsync(mem.d_texts, stream);
-            mem.d_texts = nullptr;
-        }
-
-        if (mem.d_lines) {
-            cudaFreeAsync(mem.d_lines, stream);
-            mem.d_lines = nullptr;
-        }
-
-        if (mem.d_circles) {
-            cudaFreeAsync(mem.d_circles, stream);
-            mem.d_circles = nullptr;
-        }
-
         Font::freeFont(mem.d_txtfont);
     }
 
-    BoundingBox* d_boxes   = nullptr;
-    Skeleton*    d_skelets = nullptr;
-    Bone*        d_bones   = nullptr;
-    Proto*       d_proto   = nullptr;
-    Coeff*       d_coeffs  = nullptr;
-    Color*       d_palette = nullptr;
-    char*        d_classes = nullptr;
-    Font*        d_txtfont = nullptr;
-    Line*        d_lines   = nullptr;
-    Rect*        d_rects   = nullptr;
-    Text*        d_texts   = nullptr;
-    Circle*      d_circles = nullptr;
+    // Get device-friendly view with raw pointers
+    DeviceStorage device() const {
+        return DeviceStorage{
+            d_letbox.ptr(),
+            d_boxes.ptr(),
+            reinterpret_cast<Skeleton*>(d_skelets.ptr()),
+            d_bones.ptr(),
+            reinterpret_cast<Proto*>(d_proto.ptr()),
+            reinterpret_cast<Coeff*>(d_coeffs.ptr()),
+            d_palette.ptr(),
+            d_classes.ptr(),
+            d_txtfont,
+            d_lines.ptr(),
+            d_rects.ptr(),
+            d_texts.ptr(),
+            d_circles.ptr(),
+            d_count.ptr(),
+            d_bone_count.ptr(),
+            d_joint_count.ptr()
+        };
+    }
+
+    NvMem<Letterbox>   d_letbox;
+    NvMem<BoundingBox> d_boxes;
+    NvMem<Keypoint>    d_skelets;  // Flattened: MAX_DETS * NUM_KPS
+    NvMem<Bone>        d_bones;
+    NvMem<float>       d_proto;    // Flattened: MAX_DETS * MASK_WIDTH * MASK_HEIGHT
+    NvMem<float>       d_coeffs;   // Flattened: MAX_DETS * MASK_COEFFS
+    NvMem<Color>       d_palette;
+    NvMem<char>        d_classes;
+    Font*              d_txtfont;
+    NvMem<Line>        d_lines;
+    NvMem<Rect>        d_rects;
+    NvMem<Text>        d_texts;
+    NvMem<Circle>      d_circles;
+    
+    // Atomic counters
+    NvMem<uint>        d_count;
+    NvMem<uint>        d_bone_count;
+    NvMem<uint>        d_joint_count;
 };
 
 } // namespace yolo

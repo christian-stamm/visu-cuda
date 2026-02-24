@@ -57,10 +57,10 @@ namespace {
 } // namespace
 
 __global__ void buildSegmKernel(
-    const float* d_mout,   // Raw detection data (x0, y0, x1, y1, conf, class_id)
-    uint*        d_count,  // Atomic counter for valid detections
-    Letterbox*   d_letbox, // Letterbox info for coordinate transformation
-    Storage      mem       // Memory manager for intermediate buffers
+    const float*   d_mout,   // Raw detection data (x0, y0, x1, y1, conf, class_id)
+    uint*          d_count,  // Atomic counter for valid detections
+    Letterbox*     d_letbox, // Letterbox info for coordinate transformation
+    DeviceStorage  mem       // Memory manager for intermediate buffers
 )
 {
     uint idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -93,9 +93,9 @@ __global__ void buildSegmKernel(
 }
 
 __global__ void buildMaskKernel(
-    const float* d_mout, // Mask prototypes [MASK_COEFFS][MASK_HEIGHT][MASK_WIDTH]
-    uint         count,  // Number of valid detections
-    Storage      mem     // Memory manager for intermediate buffers
+    const float*  d_mout, // Mask prototypes [MASK_COEFFS][MASK_HEIGHT][MASK_WIDTH]
+    uint          count,  // Number of valid detections
+    DeviceStorage mem     // Memory manager for intermediate buffers
 )
 {
     // 2D grid: blockIdx.x = detection index, blockIdx.y = pixel block index
@@ -122,11 +122,11 @@ __global__ void buildMaskKernel(
 }
 
 __global__ void overlayMaskKernel(
-    uchar*     d_img,    // Image data on device
-    uint2      img_size, // Image dimensions
-    Letterbox* d_letbox, // Letterbox info for coordinate transformation
-    uint       count,    // Number of valid detections
-    Storage    mem       // Memory manager for intermediate buffers
+    uchar*         d_img,    // Image data on device
+    uint2          img_size, // Image dimensions
+    Letterbox*     d_letbox, // Letterbox info for coordinate transformation
+    uint           count,    // Number of valid detections
+    DeviceStorage  mem       // Memory manager for intermediate buffers
 )
 {
     // 2D grid: blockIdx.x = detection index, remaining dims = pixel index
@@ -245,21 +245,18 @@ uint Segm::buildSegm(
 )
 {
 
-    NvMem<uint> d_count(1); // Device memory for counting valid detections
-    check_cuda(cudaMemsetAsync(d_count.ptr(), 0, sizeof(uint), stream));
-
-    NvMem<Letterbox> d_letbox;
-    check_cuda(cudaMemcpyAsync(d_letbox.ptr(), &letbox, sizeof(Letterbox), cudaMemcpyHostToDevice, stream));
+    check_cuda(cudaMemsetAsync(mem.d_count.ptr(), 0, sizeof(uint), stream));
+    check_cuda(cudaMemcpyAsync(mem.d_letbox.ptr(), &letbox, sizeof(Letterbox), cudaMemcpyHostToDevice, stream));
 
     int blockSize = 256;
     int gridSize  = (letbox.dets + blockSize - 1) / blockSize;
 
-    buildSegmKernel<<<gridSize, blockSize, 0, stream>>>(d_out, d_count.ptr(), d_letbox.ptr(), mem);
+    buildSegmKernel<<<gridSize, blockSize, 0, stream>>>(d_out, mem.d_count.ptr(), mem.d_letbox.ptr(), mem.device());
     check_cuda();
 
     // Copy back the count of valid detections
     letbox.dets = 0; // Reset count on host before copying back
-    check_cuda(cudaMemcpyAsync(&letbox.dets, d_count.ptr(), sizeof(uint), cudaMemcpyDeviceToHost, stream));
+    check_cuda(cudaMemcpyAsync(&letbox.dets, mem.d_count.ptr(), sizeof(uint), cudaMemcpyDeviceToHost, stream));
     check_cuda();
 
     return letbox.dets;
@@ -281,7 +278,7 @@ void Segm::drawSegm(
     }
 
     // Clear proto buffers
-    cudaMemsetAsync(mem.d_proto, 0, MAX_DETS * sizeof(Proto), stream);
+    cudaMemsetAsync(mem.d_proto.ptr(), 0, MAX_DETS * sizeof(Proto), stream);
 
     const uint total_pixels = MASK_WIDTH * MASK_HEIGHT;
     const int  blockSize    = 256;
@@ -289,10 +286,9 @@ void Segm::drawSegm(
     // Step 1: Build masks - 2D grid: x-dimension for detections, y-dimension for pixels
     // Total threads: count × 25,600 (one thread per output pixel)
     dim3 maskGridSize(count, (total_pixels + blockSize - 1) / blockSize);
-    buildMaskKernel<<<maskGridSize, blockSize, 0, stream>>>(d_mout, count, mem);
+    buildMaskKernel<<<maskGridSize, blockSize, 0, stream>>>(d_mout, count, mem.device());
 
-    NvMem<Letterbox> d_letbox;
-    check_cuda(cudaMemcpyAsync(d_letbox.ptr(), &letbox, sizeof(Letterbox), cudaMemcpyHostToDevice, stream));
+    check_cuda(cudaMemcpyAsync(mem.d_letbox.ptr(), &letbox, sizeof(Letterbox), cudaMemcpyHostToDevice, stream));
 
     // Step 2: Overlay masks on image - 2D grid: x-dimension for detections, y-dimension for pixels
     // Launch enough threads to cover the full image dimensions, not just a max bbox size
@@ -300,7 +296,7 @@ void Segm::drawSegm(
     const uint2 img_size         = d_img.getSize();
     const uint  max_image_pixels = img_size.x * img_size.y;
     dim3        overlayGridSize(count, (max_image_pixels + blockSize - 1) / blockSize);
-    overlayMaskKernel<<<overlayGridSize, blockSize, 0, stream>>>(d_img.ptr(), img_size, d_letbox.ptr(), count, mem);
+    overlayMaskKernel<<<overlayGridSize, blockSize, 0, stream>>>(d_img.ptr(), img_size, mem.d_letbox.ptr(), count, mem.device());
 
     check_cuda();
 }
